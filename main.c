@@ -3,15 +3,92 @@
 #include <string.h>
 
 
-#define BACKING_STORE_FILE "BACKING_STORE.bin"
+//#define BACKING_STORE_FILE "BACKING_STORE.bin"
+#define BACKING_STORE_FILE "/mnt/c/Users/guilh/Desktop/BACKING_STORE.bin"
 #define MEM_SIZE 256
 #define PAGE_SIZE 256
 #define PAGE_FAULT -1
+#define TLB_SIZE 16
 
 int page_fault_aumont = 0;
+int found_in_tlb = 0;
+int total_memoy_access = 0;
+
+struct tlb{
+
+    // will use FIFO to control TLB
+    int *pages;
+    int *frames;
+
+    int max_length;
+    int current; // last used element
+    int completed;
+
+} typedef TLB;
 
 
-int load_memory(int page_number, int **memory, int mem_size){
+TLB *start_tlb(int size){
+
+    
+    TLB *t = (TLB *) calloc(1, sizeof(TLB));
+    if(t == NULL) exit(-1);
+
+    t->pages = (int *) calloc(TLB_SIZE, sizeof(int));
+    t->frames = (int *) calloc(TLB_SIZE, sizeof(int));
+
+    if(t->pages == NULL || t->frames == NULL) exit(-1);
+
+    t->current = -1;
+    t->completed = 0;
+    t->max_length = size;
+
+    return t;
+}
+
+int search_TLB(int value, TLB *t){
+
+    int start = 0;
+    int end = t->max_length;
+
+    if(t->completed == 0){
+        end = t->current + 1;
+    }
+
+
+    for (int i = start; i < end; i++){
+    
+        // page in TLB
+        if(t->pages[i] == value) return i;
+
+    }
+
+    return -1;
+}
+
+
+int insert_TLB(int page, int frame, TLB *t){
+
+    // using FIFO
+
+    if(search_TLB(page, t) != -1) return -1; // already on TLB
+
+
+    // change the position of the current pointer
+    // it should point to the last inserted position
+    t->current++;
+    if(t->current == t->max_length){
+        t->completed = 1;
+        t->current = 0;
+    }
+
+    // write values to tlb (overwrite the last value)
+    t->pages[t->current] = page;
+    t->frames[t->current] = frame;  
+    
+    return t->current;
+}
+
+int load_memory(int page_number, char **memory, int mem_size){
 
     FILE *b_store = fopen(BACKING_STORE_FILE, "rb");
 
@@ -22,10 +99,10 @@ int load_memory(int page_number, int **memory, int mem_size){
 
     fseek(b_store, 256 * page_number, SEEK_SET);
 
-    int *page = (int *) calloc(1, PAGE_SIZE);
+    char *page = (char *) calloc(256, sizeof(char));
     if(page == NULL) exit(-1);
 
-    fread(page, PAGE_SIZE, 1, b_store);
+    fread(page, sizeof(char), 256, b_store);
 
     fclose(b_store);
 
@@ -60,7 +137,7 @@ int main(int argc, char const *argv[]) {
     free(filename);
 
     // represents the real memory
-    int **memory = (int **) calloc(MEM_SIZE, sizeof(int *));
+    char **memory = (char **) calloc(MEM_SIZE, sizeof(char *));
     if(memory == NULL) exit(-1);
 
     // represents a page table
@@ -68,42 +145,57 @@ int main(int argc, char const *argv[]) {
     int page_table[MEM_SIZE];
     for(int i = 0; i < MEM_SIZE; i++) page_table[i] = PAGE_FAULT;
 
+    TLB *t = start_tlb(TLB_SIZE);
+
     do{
         unsigned int logical_address;
-        fscanf(address_file, "%u", &logical_address);
+        fscanf(address_file, "%d", &logical_address);
 
         // a unsigned int has a size of 32 bits
         // we want to extract 16 bits from the right 
         
         // since a integer has 4 bytes (32 bits)
         // we can think of the maximum value as:
-        // FFFF (65 553)
-        // we want only the 2 less significant bytes
+        // FFFF FFFF
+        // we want only the 16 less significant bits
         // so we will use the following mask:
-        // 00FF (255)  
-        unsigned int page_offset = logical_address & 0x00FF;
+        // FFFF (65535)  
+        unsigned int page_offset = logical_address & 0xFFFF;
 
         // the same idea applies to the extraction of page number
         // and the offset  
-        unsigned int page_number = page_offset & 0x00F0;
-        unsigned int offset = page_offset & 0x000F;
+
+        // page number is shifted by 1 byte so we can get it
+        // in the correct range  
+        unsigned int page_number = (page_offset & 0xFF00) >> 8;
+        unsigned int offset = page_offset & 0x00FF;
 
         printf("Logical address: %u Page+offset: %u\n", logical_address, page_offset);
 
-        if(page_table[(int) page_number] == PAGE_FAULT){
-            page_fault_aumont++;
-            int frame = load_memory((int) page_number, memory, MEM_SIZE);
-            page_table[(int) page_number] = frame;
+        int in_tlb = search_TLB(page_number, t);
+
+        if(in_tlb == -1){
+
+            if(page_table[(int) page_number] == PAGE_FAULT){
+               
+                page_fault_aumont++;
+               
+                int frame = load_memory((int) page_number, memory, MEM_SIZE);
+                page_table[(int) page_number] = frame;
+            }
+
+            insert_TLB(page_number, page_table[page_number], t);
+        }else{
+            found_in_tlb++;
         }
 
-        unsigned int byte_value = *(memory[page_table[(int) page_number]] + offset);
-        // since the objective the value of the byte,
-        // and a unsigned int has a size of 4 bytes,
-        // we want to shift it unitl only one byte is left;
-        byte_value = byte_value >> 3*8; //3 times the syze of a byte
-        // the shift operator takes shift aumount as bits, not bytes
-                 
-        printf("Value of %u+%u: %u\n\n", page_number, offset, byte_value);
+        total_memoy_access++;
+
+
+
+        char byte_value = *(memory[page_table[(int) page_number]] + offset);
+
+        printf("Value of %u+%u: %c  (%u)\n\n", page_number, offset, byte_value, (unsigned int) byte_value);
 
     }while(feof(address_file) == 0);
 
@@ -112,7 +204,18 @@ int main(int argc, char const *argv[]) {
     for(int i = 0; i < MEM_SIZE; i++) if(memory[i] != NULL) free(memory[i]);
     free(memory);
 
-    printf("\n\n\n=========\nPage faults: %d\n", page_fault_aumont);
+    free(t->pages);
+    free(t->frames);
+    free(t);
+
+    printf(
+        "\n\n\n=========\nPage faults: %d (%.2f %%)\n TLB uses: %d (%.2f %%)\n Total accesses: %d\n",
+        page_fault_aumont,
+        page_fault_aumont/(double) total_memoy_access,
+        found_in_tlb,
+        found_in_tlb/(double) total_memoy_access,
+        total_memoy_access
+    );
 
     return 0;
 }
