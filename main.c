@@ -170,7 +170,7 @@ int main(int argc, char const *argv[]) {
         unsigned int page_number = (page_offset & 0xFF00) >> 8;
         unsigned int offset = page_offset & 0x00FF;
 
-        printf("Logical address: %u Page+offset: %u\n", logical_address, page_offset);
+        printf("Logical address: %u - page+offset: %u+%u\n", logical_address, page_number, offset);
 
         int in_tlb = search_TLB(page_number, t);
 
@@ -187,10 +187,12 @@ int main(int argc, char const *argv[]) {
             insert_TLB(page_number, page_table[page_number], t);
         }else{
             found_in_tlb++;
+            printf("Found in TLB\n");
         }
 
         total_memoy_access++;
 
+        printf("Physical address: %u - frame+offset: %u+%u\n", 256 * page_table[(int) page_number] + offset, page_table[(int) page_number], offset);
 
 
         char byte_value = *(memory[page_table[(int) page_number]] + offset);
@@ -211,9 +213,9 @@ int main(int argc, char const *argv[]) {
     printf(
         "\n\n\n=========\nPage faults: %d (%.2f %%)\n TLB uses: %d (%.2f %%)\n Total accesses: %d\n",
         page_fault_aumont,
-        page_fault_aumont/(double) total_memoy_access,
+        page_fault_aumont/(double) total_memoy_access * 100,
         found_in_tlb,
-        found_in_tlb/(double) total_memoy_access,
+        found_in_tlb/(double) total_memoy_access * 100,
         total_memoy_access
     );
 
